@@ -6,6 +6,8 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = _PROJECT_ROOT / "dataset"
 DEFAULT_OUTPUT_DIR = _PROJECT_ROOT / "output"
+# 与仓库同目录的 SP100 现货 CSV（存在时 run_data_pipeline 默认加载）
+DEFAULT_SPOT_CSV = _PROJECT_ROOT / "sp100_spot_prices_20251201.csv"
 
 # SP100 成分股（用于 quote 过滤）
 SP100 = [
@@ -38,3 +40,12 @@ DEFAULT_GROUP_COLS = ["date", "underlying", "expiry", "cp_flag", "strike"]
 
 # 默认模型
 DEFAULT_MODEL = "Lasso"
+
+# run_data_pipeline 全量实验
+FILTER_SAME_EXCHANGE = True
+MONEYNESS_LIST = [0.08, 0.10, 0.12]
+TOP_N_CONTRACTS = 50
+HORIZON_LIST = [5, 10, 30, 60, 90, 120]
+MIN_VALID_Y = 20
+MIN_TRAIN_ROWS = 200
+MIN_SAMPLES_UNDERLYING = 100

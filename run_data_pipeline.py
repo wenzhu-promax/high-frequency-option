@@ -1,40 +1,33 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""数据预处理主流程：trade/quote -> 特征矩阵 -> 模型评估"""
-
-from pathlib import Path
-from typing import Optional, Tuple
+"""
+全量实验：dataset CSV → parquet（按需）→ 多标的 × 交易所过滤 × 多档 moneyness × TopN ×
+多 horizon × 多模型；单组训练超参（无网格）。汇总 CSV。
+"""
 
 import argparse
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import duckdb
+import numpy as np
 import pandas as pd
 
 from config import (
-    SP100,
-    SPANS,
-    DEFAULT_DATA_DIR,
-    DEFAULT_OUTPUT_DIR,
-    DTE_MIN,
-    DTE_MAX,
-    MONEYNESS_THRESHOLD,
-    TRAIN_MINUTES,
-    REFIT_EVERY_MINUTES,
-    DEFAULT_GROUP_COLS,
-    DEFAULT_MODEL,
+    SP100, SPANS, DEFAULT_DATA_DIR, DEFAULT_OUTPUT_DIR, DEFAULT_SPOT_CSV, DEFAULT_GROUP_COLS,
+    TRAIN_MINUTES, REFIT_EVERY_MINUTES, DTE_MIN, DTE_MAX,
+    FILTER_SAME_EXCHANGE, MONEYNESS_LIST, TOP_N_CONTRACTS, HORIZON_LIST,
+    MIN_VALID_Y, MIN_TRAIN_ROWS, MIN_SAMPLES_UNDERLYING,
 )
 from data_processing import (
-    load_trade,
-    filter_quotes_sp100,
-    merge_trades_quotes,
-    filter_rth,
-    clean_merged_option_data,
-    deduplicate_by_ticker_trade_ts,
-    add_y_5s_return,
+    load_trade, filter_quotes_sp100, merge_trades_quotes, filter_rth,
+    clean_merged_option_data, deduplicate_by_ticker_trade_ts,
+    add_y_5s_return, fix_dt_et_from_trade_ts,
 )
-from feature_engineering import add_trade_direction_proxy, build_calendar_predictors
+from feature_engineering import add_trade_direction_proxy, build_calendar_predictors, get_predictor_cols
 from model_training import rolling_train_predict, get_model_pipelines, evaluate_predictions
 
-# 去重聚合时各列聚合方式
-_AGG_DICT = {
+AGG: Dict[str, str] = {
     "conditions": "first", "correction": "first", "exchange": "first",
     "price": "median", "size": "sum", "dt": "first", "date": "first",
     "underlying": "first", "expiry": "first", "cp_flag": "first", "strike": "first",
@@ -45,145 +38,168 @@ _AGG_DICT = {
 }
 
 
-def _stage_load_trade_quote(
-    data_dir: Path,
-    output_dir: Path,
-    trade_csv: str,
-    quote_csv: str,
-    underlying: str,
-) -> Optional[Tuple[pd.DataFrame, pd.DataFrame]]:
-    """加载 trade、过滤并加载 quote，返回单标的的 trade 与 quote。"""
-    trade_path = data_dir / trade_csv
-    if not trade_path.exists():
-        print(f"Trade 文件不存在: {trade_path}")
+def _ensure_parquets(
+    data_dir: Path, out_dir: Path, trade_csv: str, quote_csv: str,
+) -> Tuple[Path, Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tp, qp = out_dir / "tradeSP100.parquet", out_dir / "quotesSP100.parquet"
+    if not tp.exists():
+        tpath = data_dir / trade_csv
+        if not tpath.exists():
+            raise FileNotFoundError(f"缺少 trade 文件: {tpath}")
+        load_trade(tpath, underlying_filter=SP100).to_parquet(tp)
+    if not qp.exists():
+        qpath = data_dir / quote_csv
+        if not qpath.exists():
+            raise FileNotFoundError(f"缺少 quote 文件: {qpath}")
+        filter_quotes_sp100(qpath, qp, codes=SP100)
+    return tp, qp
+
+
+def _clean(merged: pd.DataFrame) -> Optional[pd.DataFrame]:
+    m = fix_dt_et_from_trade_ts(merged)
+    if FILTER_SAME_EXCHANGE and "ask_exchange" in m.columns:
+        m = m[m["ask_exchange"] == m["bid_exchange"]]
+    m = m.dropna()
+    rth = filter_rth(m)
+    cleaned, _ = clean_merged_option_data(rth)
+    if len(cleaned) == 0:
         return None
-    trade = load_trade(trade_path, underlying_filter=SP100)
-    trade.to_parquet(output_dir / "tradeSP100.parquet")
-
-    quote_parquet = output_dir / "quotesSP100.parquet"
-    if not quote_parquet.exists():
-        quote_path = data_dir / quote_csv
-        if quote_path.exists():
-            filter_quotes_sp100(quote_path, quote_parquet, codes=SP100)
-        else:
-            print(f"Quote 文件不存在: {quote_path}")
-            return None
-
-    quote = pd.read_parquet(quote_parquet)
-    quote["dt_utc"] = pd.to_datetime(quote["sip_timestamp"], unit="ns", utc=True)
-    quote["dt_et"] = quote["dt_utc"].dt.tz_convert("America/New_York")
-    quote["dt_ct"] = quote["dt_utc"].dt.tz_convert("America/Chicago")
-
-    quote_subset = quote[quote["ticker"].str.startswith(f"O:{underlying}")].copy()
-    trade_subset = trade[trade.underlying == underlying].copy()
-    return trade_subset, quote_subset
+    return deduplicate_by_ticker_trade_ts(cleaned, AGG)
 
 
-def _stage_merge_and_clean(
-    trade_subset: pd.DataFrame,
-    quote_subset: pd.DataFrame,
+def _spot(df: pd.DataFrame, u: str, spots: dict) -> Optional[float]:
+    s = spots.get(u)
+    if s is not None and np.isfinite(s):
+        return float(s)
+    near = df[(df["dte"] >= DTE_MIN) & (df["dte"] <= DTE_MAX)]
+    if len(near) == 0:
+        return None
+    return float(np.average(near["strike"], weights=np.maximum(near["size"], 1e-9)))
+
+
+def run_experiment(
+    trade_parquet: Path,
+    quote_parquet: Path,
+    out_dir: Path,
+    spots: dict,
+    tickers: List[str],
+    run_models: bool,
 ) -> pd.DataFrame:
-    """合并 trade/quote，RTH 过滤，清洗，去重聚合。"""
-    merged = merge_trades_quotes(trade_subset, quote_subset)
-    df_rth = filter_rth(merged.dropna())
+    trade = pd.read_parquet(trade_parquet)
+    out_rows: List[dict] = []
+    con = duckdb.connect()
+    models = get_model_pipelines() if run_models else {}
 
-    cleaned, summary = clean_merged_option_data(df_rth)
-    print("清洗摘要:")
-    print(summary)
+    for u in tickers:
+        t_u = trade[trade["underlying"] == u]
+        if len(t_u) < MIN_SAMPLES_UNDERLYING:
+            continue
+        q_u = con.execute(
+            "SELECT * FROM read_parquet(?) WHERE ticker LIKE ?",
+            [str(quote_parquet), f"O:{u}%"],
+        ).fetchdf()
+        if len(q_u) == 0:
+            continue
+        c2 = _clean(merge_trades_quotes(t_u, q_u))
+        if c2 is None or len(c2) == 0:
+            continue
+        d0 = c2.copy()
+        d0["date"] = pd.to_datetime(d0["date"])
+        d0["expiry"] = pd.to_datetime(d0["expiry"])
+        d0["dte"] = (d0["expiry"] - d0["date"]).dt.days
+        sp = _spot(d0, u, spots)
+        if sp is None:
+            continue
+        d0["abs_moneyness"] = (d0["strike"] / sp - 1).abs()
 
-    cleaned2 = deduplicate_by_ticker_trade_ts(cleaned, _AGG_DICT)
-    return cleaned2
+        for mo in MONEYNESS_LIST:
+            c = d0[(d0["dte"] >= DTE_MIN) & (d0["dte"] <= DTE_MAX) & (d0["abs_moneyness"] <= mo)]
+            vol = c.groupby("ticker")["size"].sum().sort_values(ascending=False)
+            top = vol.head(min(TOP_N_CONTRACTS, len(vol))).index
+            c = c[c["ticker"].isin(top)]
+            if len(c) < MIN_SAMPLES_UNDERLYING:
+                continue
+            cand = c.copy()
+            cand["trade_dt_et"] = (
+                pd.to_datetime(cand["trade_dt"]).dt.tz_localize("UTC").dt.tz_convert("America/New_York")
+            )
+
+            for h in HORIZON_LIST:
+                df_w = add_y_5s_return(cand, group_cols=DEFAULT_GROUP_COLS, horizon_seconds=h)
+                df1 = add_trade_direction_proxy(df_w, group_cols=DEFAULT_GROUP_COLS)
+                feat = build_calendar_predictors(df1, spans=SPANS, group_cols=DEFAULT_GROUP_COLS)
+                if feat["y_5s_ret"].notna().sum() < MIN_VALID_Y:
+                    continue
+                fcols = [x for x in get_predictor_cols(feat) if x in feat.columns and not feat[x].isna().all()]
+                if not fcols:
+                    continue
+                if not run_models:
+                    out_rows.append({"underlying": u, "moneyness": mo, "horizon": h, "n_feat_rows": len(feat)})
+                    continue
+                for name, pipe in models.items():
+                    pred, _ = rolling_train_predict(
+                        feat, pipe, y_col="y_5s_ret", time_col="trade_dt_et",
+                        feature_cols=fcols, group_cols=("date",),
+                        train_minutes=TRAIN_MINUTES, refit_every_minutes=REFIT_EVERY_MINUTES,
+                        min_train_rows=MIN_TRAIN_ROWS,
+                    )
+                    ev = evaluate_predictions(pred)
+                    if ev.empty:
+                        continue
+                    row = ev.iloc[0].to_dict()
+                    row.update({"underlying": u, "moneyness": mo, "horizon": h, "model": name})
+                    out_rows.append(row)
+
+    con.close()
+    df_out = pd.DataFrame(out_rows)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "summary_experiment.csv"
+    df_out.to_csv(summary_path, index=False)
+    print(f"写入 {summary_path} 行数 {len(df_out)}")
+    return df_out
 
 
-def _stage_select_options(cleaned: pd.DataFrame, spot: float) -> pd.DataFrame:
-    """DTE、moneyness 筛选，添加时区列。"""
-    df = cleaned.copy()
-    df["date"] = pd.to_datetime(df["date"])
-    df["expiry"] = pd.to_datetime(df["expiry"])
-    df["dte"] = (df["expiry"] - df["date"]).dt.days
-    df["abs_moneyness"] = (df["strike"] / spot - 1).abs()
-    cand = df[
-        (df["dte"] >= DTE_MIN) & (df["dte"] <= DTE_MAX)
-        & (df["abs_moneyness"] <= MONEYNESS_THRESHOLD)
-    ].copy()
-
-    cand["trade_dt_et"] = (
-        pd.to_datetime(cand["trade_dt"]).dt.tz_localize("UTC").dt.tz_convert("America/New_York")
+def main() -> None:
+    p = argparse.ArgumentParser(description="全量实验主流程")
+    p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+    p.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    p.add_argument("--trade-csv", type=str, default="trades_2025-12-01.csv.gz")
+    p.add_argument("--quote-csv", type=str, default="quotes_2025-12-01.csv.gz")
+    p.add_argument("--no-prepare", action="store_true", help="不生成 parquet，需已有 trade/quote parquet")
+    p.add_argument("--trade-parquet", type=Path, default=None)
+    p.add_argument("--quote-parquet", type=Path, default=None)
+    p.add_argument(
+        "--spot-csv",
+        type=Path,
+        default=None,
+        help=f"现货 CSV（Ticker + 价格列）；省略且存在 {DEFAULT_SPOT_CSV.name} 时自动使用",
     )
-    cand["quote_dt_et"] = (
-        pd.to_datetime(cand["quote_dt"]).dt.tz_localize("UTC").dt.tz_convert("America/New_York")
-    )
-    return cand
+    p.add_argument("--spot-price-col", type=str, default="Close_Price_2025-12-01")
+    p.add_argument("--tickers", type=str, default=None, help="逗号分隔，默认 SP100 全部")
+    p.add_argument("--no-models", action="store_true")
+    args = p.parse_args()
 
+    out_dir = Path(args.output_dir)
+    if args.trade_parquet and args.quote_parquet:
+        tp, qp = args.trade_parquet, args.quote_parquet
+    elif not args.no_prepare:
+        tp, qp = _ensure_parquets(Path(args.data_dir), out_dir, args.trade_csv, args.quote_csv)
+    else:
+        tp = out_dir / "tradeSP100.parquet"
+        qp = out_dir / "quotesSP100.parquet"
 
-def _stage_build_features(cand: pd.DataFrame) -> pd.DataFrame:
-    """构造标签与特征。"""
-    aapl_y = add_y_5s_return(cand, group_cols=DEFAULT_GROUP_COLS)
-    df1 = add_trade_direction_proxy(aapl_y, group_cols=DEFAULT_GROUP_COLS)
-    df_feat = build_calendar_predictors(df1, spans=SPANS, group_cols=DEFAULT_GROUP_COLS)
-    return df_feat
+    spot_path = args.spot_csv
+    if spot_path is None and DEFAULT_SPOT_CSV.exists():
+        spot_path = DEFAULT_SPOT_CSV
+    spots: dict = {}
+    if spot_path and spot_path.exists():
+        sc = pd.read_csv(spot_path)
+        spots = dict(zip(sc["Ticker"], sc[args.spot_price_col].astype(float)))
 
-
-def _stage_run_models(df_feat: pd.DataFrame, run_models: bool) -> None:
-    """滚动训练（Lasso 等模型）并打印评估指标。"""
-    if not run_models:
-        return
-    pipelines = get_model_pipelines()
-    pred_df, _ = rolling_train_predict(
-        df_feat,
-        pipelines[DEFAULT_MODEL],
-        y_col="y_5s_ret",
-        time_col="trade_dt_et",
-        group_cols=("date",),
-        train_minutes=TRAIN_MINUTES,
-        refit_every_minutes=REFIT_EVERY_MINUTES,
-    )
-    eval_df = evaluate_predictions(pred_df)
-    if not eval_df.empty:
-        print(f"{DEFAULT_MODEL} 评估:")
-        print(f"  RMSE = {eval_df['rmse'].iloc[0]:.6f}")
-        print(f"  R²   = {eval_df['r2'].iloc[0]:.4f}")
-
-
-def main(
-    data_dir: Path,
-    output_dir: Path,
-    trade_csv: str = "trades_2025-12-01.csv.gz",
-    quote_csv: str = "quotes_2025-12-01.csv.gz",
-    underlying: str = "AAPL",
-    spot: float = 281.10,
-    run_models: bool = True,
-) -> None:
-    """从原始 trade/quote 到特征矩阵与 Lasso 评估的完整流程"""
-    data_dir = Path(data_dir)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    result = _stage_load_trade_quote(data_dir, output_dir, trade_csv, quote_csv, underlying)
-    if result is None:
-        return
-    trade_subset, quote_subset = result
-
-    cleaned = _stage_merge_and_clean(trade_subset, quote_subset)
-    cand = _stage_select_options(cleaned, spot)
-    df_feat = _stage_build_features(cand)
-
-    cand.to_parquet(output_dir / f"{underlying}.parquet")
-    df_feat.to_parquet(output_dir / f"{underlying}_features.parquet")
-    print(f"特征矩阵已保存: {output_dir / f'{underlying}_features.parquet'}")
-
-    _stage_run_models(df_feat, run_models)
+    tickers = [x.strip() for x in args.tickers.split(",")] if args.tickers else SP100
+    run_experiment(tp, qp, out_dir, spots, tickers, run_models=not args.no_models)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="数据预处理主流程")
-    parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--no-models", action="store_true", help="不跑模型")
-    args = parser.parse_args()
-
-    main(
-        data_dir=args.data_dir,
-        output_dir=args.output_dir,
-        run_models=not args.no_models,
-    )
+    main()

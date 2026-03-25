@@ -67,6 +67,14 @@ def add_trade_dt_cols(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def fix_dt_et_from_trade_ts(df: pd.DataFrame) -> pd.DataFrame:
+    """merge 后用 trade_ts 重建 dt_et（纽约），避免 parquet 时区错误导致 RTH 为空。"""
+    out = df.copy()
+    if "trade_ts" in out.columns:
+        out["dt_et"] = pd.to_datetime(out["trade_ts"], unit="ns", utc=True).dt.tz_convert("America/New_York")
+    return out
+
+
 def load_quote_csv(path: Union[str, Path], nrows: Optional[int] = None) -> pd.DataFrame:
     """加载 quote CSV（可选限制行数）"""
     if nrows is not None:
