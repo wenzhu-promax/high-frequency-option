@@ -1,0 +1,41 @@
+# Bytecode / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual env
+.venv/
+venv/
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# 实验输出与本地数据（体积大，勿提交）
+**/output/
+**/output_*/
+**/output_no_exchange/
+**/dataset/
+*.parquet
+*.parquet.gz
+*.csv.gz
+*.log
+*.log.*
+
+# 可选：仓库内现货副本（若存在）
+**/sp100_spot_prices*.csv
+
+# DuckDB 本地库
+*.duckdb
+
+# 本地备份快照（若从主线复制进来）
+high-frequency/backup/
+
+# OS
+.DS_Store
+Thumbs.db
