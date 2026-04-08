@@ -135,8 +135,8 @@ def merge_trades_quotes(
 ) -> pd.DataFrame:
     """merge_asof：每笔 trade 对齐到其发生前的最近一条 quote。
 
-    调用方: run_data_pipeline._process_one_underlying、carryforward_experiment_common.load_d0_for_cf、
-    run_carryforward_experiment._process_one_underlying_cf。
+    调用方: run_data_pipeline._process_one_underlying、carryforward.carryforward_experiment_common.load_d0_for_cf、
+    carryforward.run_carryforward_experiment._process_one_underlying_cf。
     """
     t = trades.copy()
     q = quotes.copy()
@@ -278,8 +278,8 @@ def add_y_5s_return(
     """
     构造 y 标签：未来 horizon_seconds 内成交均价相对当前 mid 的收益率。
 
-    调用方: run_data_pipeline._process_one_underlying、carryforward_experiment_common.iter_mo_horizon_features、
-    run_carryforward_experiment._process_one_underlying_cf。
+    调用方: run_data_pipeline._process_one_underlying、carryforward.carryforward_experiment_common.iter_mo_horizon_features、
+    carryforward.run_carryforward_experiment._process_one_underlying_cf。
     变量构造:
       future_avg_trade_price_5s: 窗口 (T, T+horizon] 内所有 trade 的 price 的成交量加权平均
         （此处简化为等权平均：sum(px)/cnt，因单合约内 size 差异不大）

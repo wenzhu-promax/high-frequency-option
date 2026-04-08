@@ -33,8 +33,8 @@ venv/
 # DuckDB 本地库
 *.duckdb
 
-# 本地备份快照（若从主线复制进来）
-high-frequency/backup/
+# 仅忽略旧日期整包快照；backup/README.txt 与 monolithic_legacy 可纳入版本库
+high-frequency/carryforward/backup/carryforward_original_*/
 
 # OS
 .DS_Store

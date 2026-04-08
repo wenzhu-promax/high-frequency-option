@@ -1,19 +1,27 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Carry-forward 实验精简入口（v2）：单标的管线拆至 carryforward_experiment_common，
-滚动与评估逻辑与 run_carryforward_experiment.py 一致；便于维护且不改原版脚本。
+Carry-forward 实验入口：单标的管线在 carryforward_experiment_common（load_d0、特征网格、rolling_train_predict_carryforward），
+与主线数据/特征一致，仅滚动评估为 carry-forward。
 
-用法与原版相同，请使用独立输出目录，例如：
-  python run_carryforward_experiment_v2.py --output-dir output_carryforward_v2 --max-tickers 3
+旧版单体脚本（含内联 rolling_train_predict_carryforward）已移至备份：
+  carryforward/backup/run_carryforward_experiment_monolithic_legacy.py
+
+请使用独立输出目录，工作目录为 ``high-frequency/``，例如：
+  python carryforward/run_carryforward_experiment.py --output-dir output_carryforward --max-tickers 3
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 import warnings
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+
+_HF_ROOT = Path(__file__).resolve().parent.parent
+if str(_HF_ROOT) not in sys.path:
+    sys.path.insert(0, str(_HF_ROOT))
 from typing import Dict, List, Optional, Tuple
 
 import duckdb
@@ -21,7 +29,7 @@ import pandas as pd
 from sklearn.exceptions import ConvergenceWarning
 from tqdm import tqdm
 
-from carryforward_experiment_common import (
+from carryforward.carryforward_experiment_common import (
     iter_mo_horizon_features,
     load_d0_for_cf,
     rolling_train_predict_carryforward,
@@ -104,10 +112,10 @@ def _pool_worker_init_cf(
     _W_POOL_CLOCK_TYPE = clock_type
 
 
-def _process_one_underlying_v2(u: str) -> List[dict]:
-    """单标的：load_d0 + 特征网格迭代 + carry-forward 评估（逻辑对齐原版 _process_one_underlying_cf）。
+def _process_one_underlying_cf(u: str) -> List[dict]:
+    """单标的：load_d0 + 特征网格迭代 + carry-forward 评估。
 
-    调用方: _safe_process_one_v2（本文件）。
+    调用方: _safe_process_one_cf（本文件）。
 
     项目内依赖: load_d0_for_cf / iter_mo_horizon_features / write_by_ticker_csv → carryforward_experiment_common；
     get_model_pipelines / evaluate_predictions → model_training；rolling_train_predict_carryforward →
@@ -172,9 +180,9 @@ def _process_one_underlying_v2(u: str) -> List[dict]:
         con.close()
 
 
-def _safe_process_one_v2(u: str) -> List[dict]:
+def _safe_process_one_cf(u: str) -> List[dict]:
     try:
-        return _process_one_underlying_v2(u)
+        return _process_one_underlying_cf(u)
     except Exception as e:
         return [{"underlying": u, "error": str(e)}]
 
@@ -220,7 +228,7 @@ def run_carryforward_experiment(
             initializer=_pool_worker_init_cf,
             initargs=initargs,
         ) as ex:
-            it = ex.map(_safe_process_one_v2, tickers)
+            it = ex.map(_safe_process_one_cf, tickers)
             if show_progress:
                 it = tqdm(it, total=len(tickers), desc="标的", unit="ticker")
             for u, rows in zip(tickers, it):
@@ -248,7 +256,7 @@ def run_carryforward_experiment(
         try:
             t_iter = tqdm(tickers, desc="标的", unit="ticker") if show_progress else tickers
             for u in t_iter:
-                rows = _safe_process_one_v2(u)
+                rows = _safe_process_one_cf(u)
                 write_by_ticker_csv(out_dir, u, rows)
                 out_rows.extend(rows)
         finally:
@@ -258,12 +266,12 @@ def run_carryforward_experiment(
     out_dir.mkdir(parents=True, exist_ok=True)
     summary_path = out_dir / "summary_experiment.csv"
     df_out.to_csv(summary_path, index=False)
-    print(f"[carryforward-v2] 写入 {summary_path} 行数 {len(df_out)}")
+    print(f"[carryforward] 写入 {summary_path} 行数 {len(df_out)}")
     return df_out
 
 
 def run_synthetic_selftest() -> None:
-    """调用 common 中 rolling_train_predict_carryforward，与原版自检一致。"""
+    """调用 carryforward_experiment_common.rolling_train_predict_carryforward 的合成数据自检。"""
     import numpy as np
     from sklearn.impute import SimpleImputer
     from sklearn.linear_model import Ridge
@@ -310,13 +318,13 @@ def run_synthetic_selftest() -> None:
         raise RuntimeError("synthetic selftest: no predictions produced")
     if stats.get("n_fit_windows", 0) < 1:
         raise RuntimeError("synthetic selftest: expected at least one fit window")
-    print("[carryforward-v2 smoke/synthetic] OK | pred_rows=", len(pred), "| stats:", stats)
+    print("[carryforward smoke/synthetic] OK | pred_rows=", len(pred), "| stats:", stats)
 
 
 def main() -> None:
     warnings.filterwarnings("ignore", category=ConvergenceWarning)
     p = argparse.ArgumentParser(
-        description="Carry-forward v2：共用模块 carryforward_experiment_common；行为对齐原版",
+        description="Carry-forward：共用 carryforward_experiment_common；与主线数据/特征一致",
     )
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     p.add_argument("--output-dir", type=Path, default=None)
@@ -374,10 +382,10 @@ def main() -> None:
         if args.min_train_rows is None:
             args.min_train_rows = 50
         if args.output_dir is None:
-            args.output_dir = Path(__file__).resolve().parent / "output_carryforward_v2_smoke"
+            args.output_dir = Path(__file__).resolve().parent / "output_carryforward_smoke"
 
     if args.output_dir is None:
-        out_dir = Path(__file__).resolve().parent / "output_carryforward_v2"
+        out_dir = Path(__file__).resolve().parent / "output_carryforward"
     else:
         out_dir = Path(args.output_dir).resolve()
 
@@ -438,9 +446,9 @@ def main() -> None:
     resolved_min_valid_y = args.min_valid_y if args.min_valid_y is not None else MIN_VALID_Y
     resolved_clock_type = clock_type_override if clock_type_override is not None else DEFAULT_CLOCK_TYPE
 
-    print(f"[carryforward-v2] 输出目录: {out_dir} | ask/bid 交易所一致过滤: {filter_on}")
+    print(f"[carryforward] 输出目录: {out_dir} | ask/bid 交易所一致过滤: {filter_on}")
     print(
-        "[carryforward-v2] 实验设定: "
+        "[carryforward] 实验设定: "
         f"clock_type={resolved_clock_type}, spans_type={spans_type}, "
         f"horizons={resolved_horizons}, moneyness={resolved_moneyness}, "
         f"min_train_rows={resolved_min_train_rows}, min_valid_y={resolved_min_valid_y}"

@@ -14,8 +14,8 @@ def get_predictor_cols(df: pd.DataFrame) -> List[str]:
     """按列名正则匹配 build_calendar_predictors 生成的 predictor 列。
 
     调用方: model_training._rolling_train_predict_core、run_data_pipeline._process_one_underlying、
-    carryforward_experiment_common（rolling_train_predict_carryforward 与 iter_mo_horizon_features 路径）、
-    run_carryforward_experiment（本地 rolling_train_predict_carryforward 与 _process_one_underlying_cf）。
+    carryforward.carryforward_experiment_common（rolling_train_predict_carryforward 与 iter_mo_horizon_features 路径）、
+    carryforward.run_carryforward_experiment._process_one_underlying_cf。
     """
     patt = re.compile(
         r"^(breadth|immediacy|volume_all|volume_avg|volume_max|lambda_|"
@@ -80,7 +80,7 @@ def add_trade_direction_proxy(
     """Lee-Ready：quote rule 先，tick rule 兜底，输出 +1/-1/0。
 
     调用方: build_calendar_predictors（本模块）、run_data_pipeline._process_one_underlying、
-    carryforward_experiment_common.iter_mo_horizon_features、run_carryforward_experiment._process_one_underlying_cf。
+    carryforward.carryforward_experiment_common.iter_mo_horizon_features、carryforward.run_carryforward_experiment._process_one_underlying_cf。
     """
     out = df.copy()
     out[price_col] = pd.to_numeric(out[price_col], errors="coerce")
@@ -155,8 +155,8 @@ def build_calendar_predictors(
     past_return 过去收益，turnover 成交量/基准，autocov 收益自协方差，
     quoted_spread 报价价差，effective_spread 有效价差。
 
-    调用方: run_data_pipeline._process_one_underlying、carryforward_experiment_common.iter_mo_horizon_features、
-    run_carryforward_experiment._process_one_underlying_cf。
+    调用方: run_data_pipeline._process_one_underlying、carryforward.carryforward_experiment_common.iter_mo_horizon_features、
+    carryforward.run_carryforward_experiment._process_one_underlying_cf。
     """
     if spans is None:
         spans = SPANS

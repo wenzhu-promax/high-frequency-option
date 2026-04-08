@@ -40,8 +40,7 @@ def get_model_pipelines() -> Dict[str, Pipeline]:
     线性模型：imputer(median) → scaler → 模型；树模型：imputer → 模型（无 scaler）；
     XGBoost 含 scaler 与线性模型路径一致（便于与 Lasso 等对比，非必须）。
 
-    调用方: run_data_pipeline._process_one_underlying、run_carryforward_experiment._process_one_underlying_cf、
-    run_carryforward_experiment_v2._process_one_underlying_v2。
+    调用方: run_data_pipeline._process_one_underlying、carryforward.run_carryforward_experiment._process_one_underlying_cf。
     """
     return {
         "Lasso": _linear_pipeline(
@@ -90,7 +89,7 @@ def _rolling_train_predict_core(
     """滚动训练预测；可选返回末次成功 fit 的解释结果。
 
     在「同一 group_cols 分组（如单日）」内按 refit_time 网格滑动；若某步 train 行数 < min_train_rows
-    则整步跳过（与 carry-forward 版不同，见 run_carryforward_experiment）。
+    则整步跳过（与 carry-forward 版不同，见 carryforward/run_carryforward_experiment.py）。
 
     调用方: rolling_train_predict、rolling_train_predict_with_explain（本模块）。
     """
@@ -202,8 +201,7 @@ def rolling_train_predict_with_explain(
 def evaluate_predictions(pred_df: pd.DataFrame, y_col: str = "y_5s_ret") -> pd.DataFrame:
     """RMSE、R²、方向准确率。dir_acc = sign(y)==sign(y_pred) 的比例。
 
-    调用方: run_data_pipeline._process_one_underlying、run_carryforward_experiment._process_one_underlying_cf、
-    run_carryforward_experiment_v2._process_one_underlying_v2。
+    调用方: run_data_pipeline._process_one_underlying、carryforward.run_carryforward_experiment._process_one_underlying_cf。
     """
     if pred_df is None or pred_df.empty:
         return pd.DataFrame()

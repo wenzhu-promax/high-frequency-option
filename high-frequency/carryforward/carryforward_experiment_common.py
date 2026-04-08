@@ -1,15 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Carry-forward 实验共用步骤：与 run_carryforward_experiment._process_one_underlying_cf 中
-对应代码块保持逐行等价，便于单处维护。
+Carry-forward 实验共用：load_d0、特征网格迭代、rolling_train_predict_carryforward。
+由 ``run_carryforward_experiment.py`` 唯一入口调用。
 
-rolling_train_predict_carryforward 为完整拷贝（与原版同逻辑），供 v2 入口使用；
-原版脚本仍保留自有副本，避免改动既有文件行为。
+旧版单体脚本（内联重复逻辑）见 ``carryforward/backup/run_carryforward_experiment_monolithic_legacy.py``（仅备份）。
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+_HF_ROOT = Path(__file__).resolve().parent.parent
+if str(_HF_ROOT) not in sys.path:
+    sys.path.insert(0, str(_HF_ROOT))
+
 from typing import Iterator, List, Optional, Tuple
 
 import duckdb
@@ -42,10 +47,9 @@ def rolling_train_predict_carryforward(
     refit_every_minutes: int = 5,
     min_train_rows: int = 200,
 ) -> Tuple[pd.DataFrame, List[str], dict]:
-    """与 run_carryforward_experiment 中同名函数逻辑一致（滚动 + carry-forward）。
+    """滚动 + carry-forward 训练预测（滚动步内 train 不足时用上一成功 fit 的模型预测）。
 
-    调用方: run_carryforward_experiment_v2._process_one_underlying_v2（本仓库以本实现为准；
-    run_carryforward_experiment.py 内含逐行等价副本，修改时需同步）。
+    调用方: run_carryforward_experiment._process_one_underlying_cf。
     """
     data = df.copy()
     data[time_col] = pd.to_datetime(data[time_col], errors="coerce")
@@ -141,7 +145,7 @@ def load_d0_for_cf(
 ) -> Optional[pd.DataFrame]:
     """等价于原版 _process_one_underlying_cf 中从 t_u 到 d0（含 abs_moneyness）的片段；失败返回 None。
 
-    调用方: run_carryforward_experiment_v2._process_one_underlying_v2。
+    调用方: run_carryforward_experiment._process_one_underlying_cf。
     """
     t_u = trade[trade["underlying"] == u]
     if len(t_u) < MIN_SAMPLES_UNDERLYING:
@@ -179,7 +183,7 @@ def iter_mo_horizon_features(
 ) -> Iterator[Tuple[float, int, pd.DataFrame, List[str]]]:
     """等价于原版 mo/h 嵌套循环中构造 feat、fcols 并 continue 的规则；有效时 yield 一组。
 
-    调用方: run_carryforward_experiment_v2._process_one_underlying_v2。
+    调用方: run_carryforward_experiment._process_one_underlying_cf。
     """
     for mo in moneyness_list:
         c = d0[(d0["dte"] >= DTE_MIN) & (d0["dte"] <= DTE_MAX) & (d0["abs_moneyness"] <= mo)]
@@ -219,7 +223,7 @@ def iter_mo_horizon_features(
 def write_by_ticker_csv(out_dir: Path, u: str, rows: List[dict]) -> None:
     """与 run_data_pipeline._write_ticker_csv 相同。
 
-    调用方: run_carryforward_experiment_v2.run_carryforward_experiment。
+    调用方: run_carryforward_experiment.run_carryforward_experiment。
     """
     out_dir = Path(out_dir)
     sub = out_dir / "by_ticker"

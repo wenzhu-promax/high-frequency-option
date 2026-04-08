@@ -113,8 +113,7 @@ def _spot(df: pd.DataFrame, u: str, spots: dict) -> Optional[float]:
 def _read_trade_for_tickers(trade_path: str, tickers: List[str]) -> pd.DataFrame:
     """按本次标的列表加载 trade（谓词下推；失败则全表读入后 isin 过滤）。
 
-    调用方: _pool_worker_init、run_experiment 单进程路径（本文件）；run_carryforward_experiment、
-    run_carryforward_experiment_v2（自各模块导入）。
+    调用方: _pool_worker_init、run_experiment 单进程路径（本文件）；carryforward.run_carryforward_experiment（自各模块导入）。
     """
     if not tickers:
         return pd.read_parquet(trade_path)
@@ -369,7 +368,7 @@ def _safe_process_one(u: str) -> Tuple[List[dict], pd.DataFrame]:
 def _write_ticker_csv(out_dir: Path, u: str, rows: List[dict]) -> None:
     """将单标的所有实验结果行写入 out_dir/by_ticker/{u}.csv。
 
-    调用方: _collect_results（本文件）；carryforward_experiment_common.write_by_ticker_csv 为等价封装。
+    调用方: _collect_results（本文件）；carryforward.carryforward_experiment_common.write_by_ticker_csv 为等价封装。
     """
     sub = out_dir / "by_ticker"
     sub.mkdir(parents=True, exist_ok=True)

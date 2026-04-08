@@ -1,6 +1,6 @@
 # Push Mainline
 
-该目录为准备推送的**高频期权实验**主线代码快照：含 `README.md` 与 `high-frequency/` 下 12 个文件（11 个 `.py` + `requirements.txt`），不包含历史脚本、结果目录、日志或其它子项目。
+该目录为准备推送的**高频期权实验**主线代码快照：含 `README.md` 与 `high-frequency/` 下 9 个顶层 `.py` + `requirements.txt`，以及子目录 `high-frequency/carryforward/`（carry-forward 入口、共用模块与 `backup/` 旧版备份）；不包含实验结果目录、日志或其它子项目。
 
 ## 文件清单（与仓库一致）
 
@@ -13,25 +13,23 @@
 | `high-frequency/model_explain.py` | 末窗系数 / importance / SHAP |
 | `high-frequency/model_plots.py` | 预测诊断图等；**summary 分面箱线图请以 `analyze_summary_eqweight.py` 为准**（`plot_summary_*_facets` 已弃用） |
 | `high-frequency/run_data_pipeline.py` | **正式实验主入口**：数据 → 特征 → 滚动训练 → `output/` |
-| `high-frequency/run_carryforward_experiment.py` | 与主线数据/特征一致，滚动步在训练样本不足时用上一段模型预测（carry-forward），**原版未改** |
-| `high-frequency/carryforward_experiment_common.py` | carry-forward 共用：`load_d0`、`特征网格迭代`、`rolling_train_predict_carryforward`（与原版逻辑对齐） |
-| `high-frequency/run_carryforward_experiment_v2.py` | 精简入口：调用 common；默认输出 `output_carryforward_v2/`，行为与原版一致 |
+| `high-frequency/carryforward/run_carryforward_experiment.py` | **唯一 carry-forward 入口**：调用 `carryforward_experiment_common`；默认输出 `carryforward/output_carryforward/` |
+| `high-frequency/carryforward/carryforward_experiment_common.py` | `load_d0_for_cf`、`iter_mo_horizon_features`、`rolling_train_predict_carryforward`、`write_by_ticker_csv` |
+| `high-frequency/carryforward/backup/run_carryforward_experiment_monolithic_legacy.py` | 旧版单体脚本备份（内联 `rolling_train_predict_carryforward`），不参与日常运行 |
 | `high-frequency/analyze_summary_eqweight.py` | 读 `summary_experiment.csv`，`--mode eqweight/rigorous/all` |
 | `high-frequency/requirements.txt` | Python 依赖 |
 
 ## 入口与说明
 
 - 正式实验：`python high-frequency/run_data_pipeline.py`（工作目录建议为 `high-frequency/` 或按脚本内路径配置数据）。
-- Carry-forward 原版：`python high-frequency/run_carryforward_experiment.py`，输出请用独立目录（如 `output_carryforward`）。
-- Carry-forward v2（推荐维护）：`python high-frequency/run_carryforward_experiment_v2.py`，逻辑与原版一致，单标的路径拆在 `carryforward_experiment_common.py`；默认目录 `output_carryforward_v2/`。
+- Carry-forward：工作目录为 `high-frequency/`，执行 `python carryforward/run_carryforward_experiment.py`（共用 `carryforward/carryforward_experiment_common.py`）；未指定 `--output-dir` 时默认写入 `carryforward/output_carryforward/`。
 - 汇总分析：`python high-frequency/analyze_summary_eqweight.py`。
 - `--explain` / SHAP：`model_explain` 依赖 `shap`；环境无 `shap` 时 `shap_mean` 等为空。
 
 ## 主流程调用链（便于对照索引）
 
 1. **正式实验**：`run_data_pipeline.main` → `run_experiment` → `_process_one_underlying` → `model_training` 滚动训练 / 评估；数据侧为 `data_processing`、`feature_engineering`。
-2. **Carry-forward（原版）**：`run_carryforward_experiment.main` → `run_carryforward_experiment` → `_process_one_underlying_cf` → `rolling_train_predict_carryforward`。
-2b. **Carry-forward v2**：`run_carryforward_experiment_v2.main` → `run_carryforward_experiment` → `_process_one_underlying_v2` → `carryforward_experiment_common`（`load_d0_for_cf` / `iter_mo_horizon_features`）→ `rolling_train_predict_carryforward`（common 内实现）。
+2. **Carry-forward**：`carryforward.run_carryforward_experiment.main` → `run_carryforward_experiment` → `_process_one_underlying_cf` → `carryforward.carryforward_experiment_common`（`load_d0_for_cf` / `iter_mo_horizon_features`）→ `rolling_train_predict_carryforward`。
 3. **汇总**：`analyze_summary_eqweight.main` → `run_eqweight_analysis` / `run_rigorous_analysis`。
 
 ## 函数定义索引（`def` 行号）
@@ -42,43 +40,39 @@
 
 | 函数 | 文件 | 行号 |
 |------|------|------|
-| `main` | `high-frequency/run_data_pipeline.py` | 398 |
-| `run_experiment` | `high-frequency/run_data_pipeline.py` | 327 |
-| `main` | `high-frequency/run_carryforward_experiment.py` | 543 |
-| `run_carryforward_experiment` | `high-frequency/run_carryforward_experiment.py` | 389 |
-| `main` | `high-frequency/run_carryforward_experiment_v2.py` | 307 |
-| `run_carryforward_experiment` | `high-frequency/run_carryforward_experiment_v2.py` | 173 |
-| `main` | `high-frequency/analyze_summary_eqweight.py` | 606 |
+| `main` | `high-frequency/run_data_pipeline.py` | 452 |
+| `run_experiment` | `high-frequency/run_data_pipeline.py` | 378 |
+| `main` | `high-frequency/carryforward/run_carryforward_experiment.py` | 324 |
+| `run_carryforward_experiment` | `high-frequency/carryforward/run_carryforward_experiment.py` | 190 |
+| `main` | `high-frequency/analyze_summary_eqweight.py` | 680 |
 
 ### `run_data_pipeline.py`
 
 | 函数 | 行号 |
 |------|------|
-| `_ensure_parquets` | 60 |
-| `_clean` | 79 |
-| `_spot` | 92 |
-| `_read_trade_for_tickers` | 103 |
-| `_pool_worker_init` | 150 |
-| `_write_explain_csv` | 169 |
-| `_collect_results` | 179 |
-| `_process_one_underlying` | 196 |
-| `_safe_process_one` | 312 |
-| `_write_ticker_csv` | 320 |
-| `run_experiment` | 327 |
-| `main` | 398 |
+| `_ensure_parquets` | 61 |
+| `_clean` | 83 |
+| `_spot` | 99 |
+| `_read_trade_for_tickers` | 113 |
+| `_pool_worker_init` | 167 |
+| `_write_explain_csv` | 189 |
+| `_collect_results` | 202 |
+| `_process_one_underlying` | 222 |
+| `_safe_process_one` | 357 |
+| `_write_ticker_csv` | 368 |
+| `run_experiment` | 378 |
+| `main` | 452 |
 
-### `run_carryforward_experiment.py`
+### `carryforward/run_carryforward_experiment.py`
 
 | 函数 | 行号 |
 |------|------|
-| `rolling_train_predict_carryforward` | 98 |
-| `_pool_worker_init_cf` | 232 |
-| `_process_one_underlying_cf` | 274 |
-| `_safe_process_one_cf` | 374 |
-| `_write_ticker_csv` | 382 |
-| `run_carryforward_experiment` | 389 |
-| `run_synthetic_selftest` | 482 |
-| `main` | 543 |
+| `_pool_worker_init_cf` | 78 |
+| `_process_one_underlying_cf` | 115 |
+| `_safe_process_one_cf` | 183 |
+| `run_carryforward_experiment` | 190 |
+| `run_synthetic_selftest` | 273 |
+| `main` | 324 |
 
 ### `model_training.py`
 
@@ -172,24 +166,13 @@
 | `run_rigorous_analysis` | 584 |
 | `main` | 611 |
 
-### `carryforward_experiment_common.py`
+### `carryforward/carryforward_experiment_common.py`
 
 | 函数 | 行号 |
 |------|------|
-| `rolling_train_predict_carryforward` | 34 |
-| `load_d0_for_cf` | 129 |
-| `iter_mo_horizon_features` | 161 |
-| `write_by_ticker_csv` | 199 |
-
-### `run_carryforward_experiment_v2.py`
-
-| 函数 | 行号 |
-|------|------|
-| `_pool_worker_init_cf` | 70 |
-| `_process_one_underlying_v2` | 107 |
-| `_safe_process_one_v2` | 166 |
-| `run_carryforward_experiment` | 173 |
-| `run_synthetic_selftest` | 256 |
-| `main` | 307 |
+| `rolling_train_predict_carryforward` | 39 |
+| `load_d0_for_cf` | 138 |
+| `iter_mo_horizon_features` | 176 |
+| `write_by_ticker_csv` | 223 |
 
 说明：`config.py` 仅常量，无顶层 `def`。各文件内嵌套的 `def`（如 `add_y_5s_return` 中的 `_one_group`）未单独列出，可在文件内搜索 `def ` 定位。
